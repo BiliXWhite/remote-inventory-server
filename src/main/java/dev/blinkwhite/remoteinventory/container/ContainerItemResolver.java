@@ -1,7 +1,9 @@
 package dev.blinkwhite.remoteinventory.container;
 
 import dev.blinkwhite.remoteinventory.Reference;
+import dev.blinkwhite.remoteinventory.config.RemoteInvConfig;
 import dev.blinkwhite.remoteinventory.enums.ResultType;
+import dev.blinkwhite.remoteinventory.network.payload.ScanContainerResultPayload;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.Container;
@@ -17,8 +19,9 @@ public class ContainerItemResolver {
                                           String itemIdStr, int slot) {
         Level level = getPlayerLevel(player);
 
+        double maxDist = RemoteInvConfig.getMaxInteractionDistance();
         double distance = player.distanceToSqr(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5);
-        if (distance > Reference.MAX_CONTAINER_INTERACTION_DISTANCE * Reference.MAX_CONTAINER_INTERACTION_DISTANCE) {
+        if (distance > maxDist * maxDist) {
             return ResultType.PLAYER_TOO_FAR;
         }
 
@@ -32,6 +35,10 @@ public class ContainerItemResolver {
         }
 
         if (!(blockEntity instanceof Container container)) {
+            return ResultType.NOT_A_CONTAINER;
+        }
+
+        if (!isBlockAllowed(level, pos)) {
             return ResultType.NOT_A_CONTAINER;
         }
 
@@ -69,7 +76,11 @@ public class ContainerItemResolver {
         //#endif
     }
 
-    //#disable-remap
+    private static boolean isBlockAllowed(Level level, BlockPos pos) {
+        return RemoteInvConfig.isBlockAllowed(
+                BuiltInRegistries.BLOCK.getKey(level.getBlockState(pos).getBlock()).toString());
+    }
+
     private static Level getPlayerLevel(ServerPlayer player) {
         //#if MC >= 12000
         return player.level();
@@ -77,7 +88,6 @@ public class ContainerItemResolver {
         //$$ return player.level;
         //#endif
     }
-    //#enable-remap
 
     private static ResultType giveToPlayer(ServerPlayer player, Container container,
                                             int slot, ItemStack stack) {
@@ -97,5 +107,35 @@ public class ContainerItemResolver {
             Reference.LOGGER.error("Error giving item to player: {}", e.getMessage(), e);
             return ResultType.INTERNAL_ERROR;
         }
+    }
+
+    public static java.util.List<ScanContainerResultPayload.SlotEntry> scanContainer(
+            ServerPlayer player, BlockPos pos) {
+        Level level = getPlayerLevel(player);
+
+        double maxDist = RemoteInvConfig.getMaxInteractionDistance();
+        double distance = player.distanceToSqr(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5);
+        if (distance > maxDist * maxDist || !level.isLoaded(pos)) {
+            return java.util.List.of();
+        }
+
+        BlockEntity blockEntity = level.getBlockEntity(pos);
+        if (!(blockEntity instanceof Container container)) {
+            return java.util.List.of();
+        }
+
+        if (!isBlockAllowed(level, pos)) {
+            return java.util.List.of();
+        }
+
+        java.util.List<ScanContainerResultPayload.SlotEntry> entries = new java.util.ArrayList<>();
+        for (int i = 0; i < container.getContainerSize(); i++) {
+            ItemStack stack = container.getItem(i);
+            if (!stack.isEmpty()) {
+                String itemId = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+                entries.add(new ScanContainerResultPayload.SlotEntry(i, itemId, stack.getCount()));
+            }
+        }
+        return entries;
     }
 }

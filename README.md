@@ -4,7 +4,15 @@
 
 Server-side Fabric mod that resolves container inventory items remotely. Designed as a backend for **Litematica Printer** and similar clients.
 
-Clients send an item ID + slot → server validates distance, container state, and item match → gives the item to the player or returns a detailed error code.
+Clients send item requests → server validates distance, container state, and item match → gives the item to the player or returns a detailed error code. Also supports container inventory scanning for efficient multi-item retrieval.
+
+## Features
+
+- **Item Retrieval** (`get_item_from_inventory`) — Request a specific item from a specific slot
+- **Container Scanning** (`scan_container`) — Scan an entire container's non-empty slots in one request
+- **Configurable Distance** — `/remoteinv distance <1-256>` sets max interaction range
+- **Whitelist / Blacklist** — `/remoteinv whitelist|blacklist add|remove|list|clear <block>`
+- **Caching Support** — Scan results enable client-side caching for efficient repeat access
 
 ## Supported Versions
 
@@ -17,21 +25,24 @@ Clients send an item ID + slot → server validates distance, container state, a
 
 > Single codebase, 13 version subprojects, preprocessor handles the rest.
 
-## How It Works
+## Commands
 
 ```
-Client                              Server
-  │                                   │
-  ├── itemId + BlockPos + slot ──────►│
-  │                                   ├── Distance check (≤ 32 blocks)
-  │                                   ├── Chunk loaded?
-  │                                   ├── BlockEntity exists?
-  │                                   ├── Is a Container?
-  │                                   ├── Slot valid & non-empty?
-  │                                   ├── Item ID matches?
-  │                                   └── Remove item → give to player
-  │◄──── result + BlockPos ──────────┤
+/remoteinv distance <1-256>    Set or view max interaction distance
+/remoteinv whitelist add <id>  Add block to whitelist
+/remoteinv whitelist remove <id>
+/remoteinv whitelist enable     Enable whitelist-only mode
+/remoteinv whitelist disable    Disable whitelist (back to blacklist mode)
+/remoteinv whitelist list       Show current whitelist
+/remoteinv whitelist clear      Clear whitelist
+/remoteinv blacklist add <id>  Add block to blacklist
+/remoteinv blacklist remove|list|clear
+/remoteinv config               Show all current settings
 ```
+
+> Whitelist mode: ONLY listed blocks can be remotely interacted with.
+> Blacklist mode: listed blocks are EXCLUDED from remote interaction.
+> An empty blacklist (default) allows all containers.
 
 ## API
 
@@ -43,19 +54,32 @@ Client                              Server
 | `pos` | `BlockPos` | Container position |
 | `slot` | `int` | Slot index |
 
+### C2S — `ScanContainerPayload`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `pos` | `BlockPos` | Container position to scan |
+
 ### S2C — `GetItemResultPayload`
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `pos` | `BlockPos` | Echoed container position (for correlation) |
-| `resultType` | `enum` | See below |
+| `pos` | `BlockPos` | Echoed container position |
+| `resultType` | `ResultType` | Result enum |
+
+### S2C — `ScanContainerResultPayload`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `pos` | `BlockPos` | Echoed container position |
+| `entries` | `List<SlotEntry>` | Non-empty slots: `(slot, itemId, count)` |
 
 ### Result Types
 
 | Code | Meaning |
 |------|---------|
 | `SUCCESS` | Item removed from container and given to player |
-| `PLAYER_TOO_FAR` | Exceeded 32-block interaction range |
+| `PLAYER_TOO_FAR` | Exceeded interaction range |
 | `CONTAINER_NOT_LOADED` | Target chunk not loaded |
 | `CONTAINER_NOT_FOUND` | No block entity at position |
 | `NOT_A_CONTAINER` | Block entity is not a Container |
@@ -63,6 +87,28 @@ Client                              Server
 | `ITEM_NOT_MATCH` | Item in slot doesn't match requested item |
 | `INTERNAL_ERROR` | Unexpected server-side failure |
 | `UNKNOWN` | Unrecognized result |
+
+## How It Works
+
+```
+Client                              Server
+  │                                   │
+  ├── get_item: itemId+pos+slot ────►│
+  │                                   ├── Distance check
+  │                                   ├── Chunk loaded?
+  │                                   ├── BlockEntity exists?
+  │                                   ├── Is a Container?
+  │                                   ├── Slot valid & non-empty?
+  │                                   ├── Item ID matches?
+  │                                   └── Remove item → give to player
+  │◄──── result + pos ──────────────┤
+  │                                   │
+  ├── scan_container: pos ──────────►│
+  │                                   ├── Same validation as above
+  │                                   ├── Iterate all slots
+  │                                   └── Return non-empty (slot,id,count)
+  │◄──── pos + [slot entries] ──────┤
+```
 
 ## Build
 
@@ -74,51 +120,59 @@ Client                              Server
 ./gradlew :1.21.11:buildAndCollect
 
 # Run the server for one version
-./gradlew :1.21.11:run
+./gradlew :1.21.11:runServer
 ```
 
-Output JARs go to `fabricWrapper/build/libs/` (version pack) and each `versions/*/build/libs/` (individual).
+Output JARs go to `fabricWrapper/build/libs/` (version pack) and each `versions/*/build/libs/` (individual versions).
 
-## Requirements
+## Dependencies
 
-- **Java 21+** (Java 25 for 26.1 snapshot builds)
+- **Java 21+** (26.1 snapshot requires Java 25)
 - **Fabric Loader** ≥0.18.4
-- **Fabric API** (any version matching your MC version)
+- **Fabric API** (version matching your MC version)
 
-## Development
-
-### Project Structure
+## Project Structure
 
 ```
 remote-inventory-server/
-├── src/main/java/          # Shared source (preprocessed)
-├── src/main/resources/     # fabric.mod.json template
+├── src/main/java/          # Shared source (preprocessed per version)
+│   ├── RemoteInventoryMod.java         # Mod entry, command registration
+│   ├── Reference.java                  # Constants
+│   ├── command/RemoteInvCommand.java   # /remoteinv command
+│   ├── config/RemoteInvConfig.java     # Server-side config (distance, lists)
+│   ├── container/ContainerItemResolver.java  # Core logic
+│   ├── enums/ResultType.java           # Result enum
+│   └── network/
+│       ├── NetworkHandler.java         # Packet type + handler registration
+│       ├── handler/
+│       │   ├── GetItemFromInventoryHandler.java
+│       │   └── ScanContainerHandler.java
+│       └── payload/
+│           ├── GetItemFromInventoryPayload.java
+│           ├── GetItemResultPayload.java
+│           ├── ScanContainerPayload.java
+│           └── ScanContainerResultPayload.java
+├── src/main/resources/     # fabric.mod.json + lang files
 ├── buildSrc/               # Custom Gradle plugin
-├── fabricWrapper/          # Aggregator JAR (bundles all versions)
+├── fabricWrapper/          # Aggregate JAR
 ├── versions/               # 13 MC version subprojects
 ├── build.gradle.kts        # Preprocessor chain config
-├── build.fabric.gradle.kts         # Build config (MC ≥1.21.5)
-├── build.fabric.remap.gradle.kts   # Build config (MC <1.21.5)
+├── build.fabric.gradle.kts         # MC ≥1.21.5
+├── build.fabric.remap.gradle.kts   # MC <1.21.5
 └── settings.gradle.kts     # Multi-version subproject includes
 ```
 
 ### Preprocessor Directives
 
-The mod uses [Fallen-Breath's preprocessor](https://github.com/Fallen-Breath/preprocessor) to support 13 Minecraft versions from a single source tree:
+Uses [Fallen-Breath preprocessor](https://github.com/Fallen-Breath/preprocessor) for single-source multi-version support:
 
 ```java
-//#if MC >= 12105
-Identifier.parse("minecraft:diamond")           // 1.21.5+
-//#elseif MC >= 12101
-ResourceLocation.parse("minecraft:diamond")     // 1.21.1 – 1.21.4
+//#if MC >= 12005
+// New networking API (CustomPacketPayload)
 //#else
-new ResourceLocation("minecraft:diamond")       // ≤1.20.6
+//$$ // Old networking API (ResourceLocation + PacketByteBufs)
 //#endif
 ```
-
-## Configuration
-
-The only configurable constant is `MAX_CONTAINER_INTERACTION_DISTANCE = 32.0` in `Reference.java`.
 
 ## License
 
