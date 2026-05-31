@@ -44,10 +44,10 @@ jobs:
         if: |
           steps.gradle-cache.outputs.cache-hit != 'true' ||
           contains(github.event.head_commit.message, 'DEPS')
-        run: ./gradlew dependencies --stacktrace
+        run: ./gradlew dependencies
 
-      - name: Build project
-        run: ./gradlew build
+      - name: Build fabricWrapper subproject
+        run: ./gradlew :fabricWrapper:build --info --stacktrace
 
       - name: Capture build artifacts
         uses: actions/upload-artifact@v7
