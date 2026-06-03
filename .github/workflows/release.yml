@@ -17,9 +17,11 @@ on:
         type: boolean
         default: false
       isPackages:
-        description: publish mods to GitHub Packages.
+        description: |-
+          publish mods to GitHub Packages.
+          Default to true, set it to false if you just want to create a GitHub release without publishing to any maven repositories.
         type: boolean
-        default: false
+        default: true
       target_subproject:
         description: |-
           The subproject name(s) of the specified Minecraft version to be released, seperated with ",".
