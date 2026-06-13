@@ -54,3 +54,7 @@ Desktop.ini
 
 # --- Node (if any) ---
 node_modules/
+
+# --- Kotlin ---
+.kotlin/
+*.salive
